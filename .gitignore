@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Python virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Local vector database
+chroma_db/
+
+# Private or large source documents
+docs/*.pdf
+docs/*.txt
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
+Thumbs.db
