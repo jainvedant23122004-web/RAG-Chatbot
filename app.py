@@ -1,8 +1,11 @@
+import base64
+import mimetypes
 import os
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
+from groq import Groq
 from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -108,6 +111,71 @@ def get_sources(documents):
 
     return list(dict.fromkeys(sources))
 
+VISION_MODEL = "qwen/qwen3.6-27b"
+
+
+def image_to_data_url(uploaded_file):
+    image_bytes = uploaded_file.getvalue()
+
+    mime_type = uploaded_file.type
+    if not mime_type:
+        mime_type, _ = mimetypes.guess_type(uploaded_file.name)
+
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    return f"data:{mime_type};base64,{encoded_image}"
+
+
+def analyze_image(uploaded_file, question):
+    load_dotenv()
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY was not found. Check your .env file."
+        )
+
+    client = Groq(api_key=api_key)
+    image_data_url = image_to_data_url(uploaded_file)
+
+    response = client.chat.completions.create(
+        model=VISION_MODEL,
+        temperature=0,
+        max_completion_tokens=500,
+        reasoning_effort="none",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a careful image-analysis assistant. "
+                    "Answer only from visual information visible in the image. "
+                    "Do not guess. If text or a visual detail is unclear, "
+                    "say that it is unclear."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": question,
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_data_url,
+                        },
+                    },
+                ],
+            },
+        ],
+    )
+
+    return response.choices[0].message.content
+
 
 def main():
     st.title("📄 RAG Document Chatbot")
@@ -130,11 +198,24 @@ def main():
             st.session_state.messages = []
             st.rerun()
 
-    try:
-        vector_store, chain = load_rag_components()
-    except Exception as error:
-        st.error(str(error))
-        st.stop()
+        st.divider()
+        st.header("Image analysis")
+
+        uploaded_image = st.file_uploader(
+            "Upload an image",
+            type=["jpg", "jpeg", "png", "webp"],
+            help="Upload an image, then ask a question about it in the chat.",
+        )
+
+        if uploaded_image is not None:
+            st.image(
+                uploaded_image,
+                caption=uploaded_image.name,
+                width="stretch",
+            )
+            st.caption(
+                "The next question will be answered using this image."
+            )
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -164,27 +245,39 @@ def main():
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching documents and generating an answer..."):
-            documents = vector_store.similarity_search(question, k=3)
-
-            if not documents:
-                answer = (
-                    "I could not find that information in the "
-                    "provided documents."
-                )
+        try:
+            if uploaded_image is not None:
+                with st.spinner("Analyzing the image..."):
+                    answer = analyze_image(uploaded_image, question)
                 sources = []
             else:
-                context = format_context(documents)
+                with st.spinner(
+                    "Searching documents and generating an answer..."
+                ):
+                    vector_store, chain = load_rag_components()
+                    documents = vector_store.similarity_search(question, k=3)
 
-                response = chain.invoke(
-                    {
-                        "context": context,
-                        "question": question,
-                    }
-                )
+                    if not documents:
+                        answer = (
+                            "I could not find that information in the "
+                            "provided documents."
+                        )
+                        sources = []
+                    else:
+                        context = format_context(documents)
 
-                answer = response.content
-                sources = get_sources(documents)
+                        response = chain.invoke(
+                            {
+                                "context": context,
+                                "question": question,
+                            }
+                        )
+
+                        answer = response.content
+                        sources = get_sources(documents)
+        except Exception as error:
+            st.error(f"Unable to answer the question: {error}")
+            return
 
         st.success(answer)
 
